@@ -197,33 +197,31 @@ function uploadData(dataset, cb) {
       }, cb);
     }
 
-    function done(err, res, body){
-      function(err, res, body) {
-        if (err) {
-          console.error('Upload failed: '.red + base);
-          console.error('\t' + err.code);
-        } else if (res.statusCode == 200) {
-          console.log('Upload successful: '.green + base);
-        } else {
-          var message;
-          try {
-            message = JSON.parse(body);
-          } catch (parseError) {
-            message = {message: body};
-          }
-          console.log('Upload failed: '.red + base);
-
-          if (message.details) {
-            console.log(JSON.stringify(message, null, 2).split('\n').map(function(line) {
-              return '\t' + line;
-            }).join('\n'));
-          } else {
-            console.log(message.message);
-          }
+    function done(err, res, body) {
+      if (err) {
+        console.error('Upload failed: '.red + base);
+        console.error('\t' + err.code);
+      } else if (res.statusCode == 200) {
+        console.log('Upload successful: '.green + base);
+      } else {
+        var message;
+        try {
+          message = JSON.parse(body);
+        } catch (parseError) {
+          message = {message: body};
         }
+        console.log('Upload failed: '.red + base);
 
-        cb();
+        if (message.details) {
+          console.log(JSON.stringify(message, null, 2).split('\n').map(function(line) {
+            return '\t' + line;
+          }).join('\n'));
+        } else {
+          console.log(message.message);
+        }
       }
+
+      cb();
     }
   }
 }
