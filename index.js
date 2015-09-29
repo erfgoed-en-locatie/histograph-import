@@ -27,26 +27,36 @@ require('colors');
 
 async.mapSeries(config.import.dirs, getDirectory, gotDirectories);
 
-function getDirectory(dataDir, callback) {
+function getDirectory(dataDir, cb) {
   return async.waterfall([
     _.partial(fs.readdir, dataDir),
-    _.partial(async.filter, _, validFilePredicate),
+    filterFolders,
     _.partial(async.map, _, makeDirectoryObject),
   ], cb);
 
-  function validFilePredicate(dir, cb) {
-    cb(null, dir !== '.' && ignoredDirs.indexOf(dir) === -1 && ( datasets.length === 0 || datasets.indexOf(dir) > -1 ));
+  function filterFolders(folders, cb){
+    return async.filter( folders, validFolderPredicate, function( folders ){
+      cb(null, folders);
+    } );
+  }
+
+  function validFolderPredicate(dir, cb) {
+    var dirIsLocalFolder = dir === '.',
+        dirIsIgnored = ignoredDirs.indexOf(dir) > -1,
+        dirPertainsToDataset = datasets.length === 0 || datasets.indexOf(dir) > -1;
+
+    cb( !dirIsLocalFolder && !dirIsIgnored && dirPertainsToDataset );
   }
 
   function makeDirectoryObject(dir, cb){
-    cb(null, {
+    return cb(null, {
       id: dir,
       dir: path.join(dataDir, dir)
     });
   }
 
   function isDirectory(dataset, cb){
-    fs.stat(dataset.dir, function(err, stat){
+    return fs.stat(dataset.dir, function(err, stat){
       if(err) return cb(err);
 
       cb(null, stat.isDirectory());
@@ -55,17 +65,17 @@ function getDirectory(dataDir, callback) {
 }
 
 function gotDirectories(err, dirs) {
-  var notFound = datasets;
-  var dirs = _.flatten(dirs);
+  var notFound = datasets,
+      dirs = _.flatten(dirs);
 
-  return async.eachSeries(dirs, _.compose(importDatasetFromDir, deregisterNotFound), done);
+  return async.eachSeries( dirs, processDir, done );
 
-  function deregisterNotFound(dir, cb){
+  function processDir(dir, cb){
     if(datasets.length > 0){
       notFound.splice(notFound.indexOf(dir.id), 1);
     }
 
-    cb(null, dir);
+    importDatasetFromDir(dir, cb);
   }
 
   function done(err) {
@@ -103,10 +113,18 @@ function createDataset(dataset, cb) {
   var filename = path.join(dataset.dir, dataset.id + '.dataset.json');
   
   return async.waterfall([
-    _.partial(fs.exists, filename),
+    checkFileExistence,
     readFile,
     postFile
   ], cb);
+
+  function checkFileExistence(cb){
+    return fs.exists( filename, existsCb );
+
+    function existsCb(exists){
+      return cb(null, exists);
+    }
+  }
 
   function readFile(exists, cb){
     if(!exists) return cb('dataset JSON file `' + dataset.id + '.dataset.json` not found');
@@ -169,16 +187,24 @@ function uploadData(dataset, cb) {
     'relations'
   ];
 
-  return async.eachSeries(files, uploadFile, done);
+  return async.eachSeries(files, uploadFile, cb);
 
   function uploadFile(file, cb) {
     var filename = path.join(dataset.dir, dataset.id + '.' + file + '.ndjson');
     var base = path.basename(filename);
 
     return async.waterfall([
-      _.partial(fs.exists, filename),
+      checkExistence,
       putFile
     ], done);
+
+    function checkExistence(cb){
+      return fs.exists(filename, existsCb);
+
+      function existsCb(exists){
+        return cb(null, exists);
+      }
+    }
 
     function putFile(exists, cb){
       if(!exists){
@@ -201,15 +227,17 @@ function uploadData(dataset, cb) {
       if (err) {
         console.error('Upload failed: '.red + base);
         console.error('\t' + err.code);
-      } else if (res.statusCode == 200) {
+      } else if (res && res.statusCode == 200) {
         console.log('Upload successful: '.green + base);
       } else {
         var message;
         try {
           message = JSON.parse(body);
         } catch (parseError) {
-          message = {message: body};
+          message = { message: body };
         }
+
+        console.log('err', message);
         console.log('Upload failed: '.red + base);
 
         if (message.details) {
