@@ -25,163 +25,231 @@ var ignoredDirs = [
 
 require('colors');
 
-async.mapSeries(config.import.dirs, function(dataDir, callback) {
-  fs.readdir(dataDir, function(err, directories) {
-    directories = directories.filter(function(dir) {
-      if (dir === '.' || ignoredDirs.indexOf(dir) > -1) {
-        return false;
-      } else {
-        return (datasets.length === 0 || datasets.indexOf(dir) > -1);
-      }
-    }).map(function(dir) {
-      return {
-        id: dir,
-        dir: path.join(dataDir, dir)
-      };
-    }).filter(function(dataset) {
-      var stat = fs.statSync(dataset.dir);
-      return stat.isDirectory();
+async.mapSeries(config.import.dirs, getDirectory, gotDirectories);
+
+function getDirectory(dataDir, cb) {
+  return async.waterfall([
+    _.partial(fs.readdir, dataDir),
+    filterFolders,
+    _.partial(async.map, _, makeDirectoryObject),
+  ], cb);
+
+  function filterFolders(folders, cb){
+    return async.filter( folders, validFolderPredicate, function( folders ){
+      cb(null, folders);
+    } );
+  }
+
+  function validFolderPredicate(dir, cb) {
+    var dirIsLocalFolder = dir === '.',
+        dirIsIgnored = ignoredDirs.indexOf(dir) > -1,
+        dirPertainsToDataset = datasets.length === 0 || datasets.indexOf(dir) > -1;
+
+    cb( !dirIsLocalFolder && !dirIsIgnored && dirPertainsToDataset );
+  }
+
+  function makeDirectoryObject(dir, cb){
+    return cb(null, {
+      id: dir,
+      dir: path.join(dataDir, dir)
     });
-    callback(null, directories);
-  });
-}, function(err, dirs) {
-  var notFound = datasets;
-  var dirs = _.flatten(dirs);
-  async.eachSeries(dirs, function(dir, callback) {
-    if (datasets.length > 0) {
+  }
+
+  function isDirectory(dataset, cb){
+    return fs.stat(dataset.dir, function(err, stat){
+      if(err) return cb(err);
+
+      cb(null, stat.isDirectory());
+    });
+  }
+}
+
+function gotDirectories(err, dirs) {
+  var notFound = datasets,
+      dirs = _.flatten(dirs);
+
+  return async.eachSeries( dirs, processDir, done );
+
+  function processDir(dir, cb){
+    if(datasets.length > 0){
       notFound.splice(notFound.indexOf(dir.id), 1);
     }
-    importDatasetFromDir(dir, function() {
-      callback();
-    });
-  }, function() {
+
+    importDatasetFromDir(dir, cb);
+  }
+
+  function done(err) {
     if (notFound.length > 0) {
       console.error('Dataset(s) not found in dirs `config.import.dirs`: '.red + notFound.join(', '));
     }
-  });
-});
+  }
+}
 
-function importDatasetFromDir(dataset, callback) {
+function importDatasetFromDir(dataset, cb) {
   if (argv.clear) {
-    deleteDataset(dataset.id, function(err) {
+    return deleteDataset(dataset.id, function(err) {
       if (err) {
         console.error('Deleting dataset failed: '.red + err);
       } else {
         console.error('Deleted dataset: '.green + dataset.id);
       }
-      callback();
-    });
-  } else {
-    createDataset(dataset, function(err) {
-      if (err) {
-        console.error(('Creating dataset ' + dataset.id + ' failed: ').red + JSON.stringify(err));
-        callback();
-      } else {
-        console.error('Created or found dataset: '.green + dataset.id);
-        uploadData(dataset, function() {
-          callback();
-        });
-      }
+
+      cb();
     });
   }
-}
 
-function createDataset(dataset, callback) {
-  var filename = path.join(dataset.dir, dataset.id + '.dataset.json');
-  // TODO: check if file exists!
-
-  if (fs.existsSync(filename)) {
-    request(apiUrl('datasets'), {
-      method: 'POST',
-      headers: {'content-type': 'application/json'},
-      body: fs.readFileSync(filename, 'utf8')
-    }, function(err, res, body) {
-      if (err) {
-        callback(err.message);
-      } else if (res.statusCode === 201 || res.statusCode === 409) {
-        callback();
-      } else {
-        callback(JSON.parse(res.body).message);
-      }
-    });
-  } else {
-    callback('dataset JSON file `' + dataset.id + '.dataset.json` not found');
-  }
-}
-
-function deleteDataset(datasetId, callback) {
-  request(apiUrl('datasets/' + datasetId), {
-    method: 'DELETE'
-  }, function(err, res, body) {
+  createDataset(dataset, function(err) {
     if (err) {
-      callback(err.message);
-    } else if (res.statusCode === 200) {
-      callback();
-    } else {
-      callback(JSON.parse(res.body).message);
+      console.error(('Creating dataset ' + dataset.id + ' failed: ').red + JSON.stringify(err));
+      return cb();
     }
+
+    console.error('Created or found dataset: '.green + dataset.id);
+    uploadData(dataset, cb);
   });
 }
 
-function apiUrl(path) {
-  var urlObj = url.parse(config.api.baseUrl);
-  urlObj.auth = config.api.admin.name + ':' + config.api.admin.password;
-  urlObj.pathname = path;
-  return url.format(urlObj);
+function createDataset(dataset, cb) {
+  var filename = path.join(dataset.dir, dataset.id + '.dataset.json');
+  
+  return async.waterfall([
+    checkFileExistence,
+    readFile,
+    postFile
+  ], cb);
+
+  function checkFileExistence(cb){
+    return fs.exists( filename, existsCb );
+
+    function existsCb(exists){
+      return cb(null, exists);
+    }
+  }
+
+  function readFile(exists, cb){
+    if(!exists) return cb('dataset JSON file `' + dataset.id + '.dataset.json` not found');
+
+    fs.readFile(filename, 'utf8', cb);
+  }
+
+  function postFile(file, cb){
+    return request(apiUrl('datasets'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: file
+    }, responseHandler);
+
+    function responseHandler(err, res, body){
+      if(err) {
+        return cb(err.message);
+      }
+
+      if( res.statusCode === 201 || res.statusCode === 409 ) {
+        return cb();   
+      }
+
+      cb( JSON.parse( res.body ).message );
+    }
+  }
+
 }
 
-function uploadData(dataset, callback) {
+function deleteDataset(datasetId, cb) {
+  return request( apiUrl( 'datasets/' + datasetId ), {
+    method: 'DELETE'
+  }, responseHandler);
+
+  function responseHandler(err, res, body) {
+    if (err) {
+      return cb(err.message);
+    }
+
+    if (res.statusCode === 200) {
+      cb();
+    }
+
+    cb( JSON.parse( res.body ).message );
+  }
+}
+
+function apiUrl(path) {
+  var urlObj = url.parse( config.api.baseUrl );
+  
+  urlObj.auth = config.api.admin.name + ':' + config.api.admin.password;
+  urlObj.pathname = path;
+
+  return url.format( urlObj );
+}
+
+function uploadData(dataset, cb) {
   var files = [
     'pits',
     'relations'
   ];
 
-  async.eachSeries(files, function(file, callback) {
+  return async.eachSeries(files, uploadFile, cb);
+
+  function uploadFile(file, cb) {
     var filename = path.join(dataset.dir, dataset.id + '.' + file + '.ndjson');
     var base = path.basename(filename);
 
-    fs.exists(filename, function(exists) {
-      if (exists) {
-        var formData = {file: fs.createReadStream(filename)};
+    return async.waterfall([
+      checkExistence,
+      putFile
+    ], done);
 
-        request.put(apiUrl('datasets/' + dataset.id + '/' + file), {
-          formData: formData,
-          headers: {
-            'content-type': 'application/x-ndjson',
-            'x-histograph-force': argv.force
-          }
-        }, function(err, res, body) {
-          if (err) {
-            console.error('Upload failed: '.red + base);
-            console.error('\t' + err.code);
-          } else if (res.statusCode == 200) {
-            console.log('Upload successful: '.green + base);
-          } else {
-            var message;
-            try {
-              message = JSON.parse(body);
-            } catch (parseError) {
-              message = {message: body};
-            }
-            console.log('Upload failed: '.red + base);
+    function checkExistence(cb){
+      return fs.exists(filename, existsCb);
 
-            if (message.details) {
-              console.log(JSON.stringify(message, null, 2).split('\n').map(function(line) {
-                return '\t' + line;
-              }).join('\n'));
-            } else {
-              console.log(message.message);
-            }
-          }
-          callback();
-        });
-      } else {
-        console.log('File not found: '.yellow + base);
-        callback();
+      function existsCb(exists){
+        return cb(null, exists);
       }
-    });
+    }
 
-  }, function(err) {
-    callback();
-  });
+    function putFile(exists, cb){
+      if(!exists){
+        console.log('File not found: '.yellow + base);
+        return cb();
+      }
+
+      var formData = { file: fs.createReadStream( filename ) };
+
+      request.put( apiUrl( 'datasets/' + dataset.id + '/' + file ), {
+        formData: formData,
+        headers: {
+          'content-type': 'application/x-ndjson',
+          'x-histograph-force': argv.force
+        }
+      }, cb);
+    }
+
+    function done(err, res, body) {
+      if (err) {
+        console.error('Upload failed: '.red + base);
+        console.error('\t' + err.code);
+      } else if (res && res.statusCode == 200) {
+        console.log('Upload successful: '.green + base);
+      } else {
+        var message;
+        try {
+          message = JSON.parse(body);
+        } catch (parseError) {
+          message = { message: body };
+        }
+
+        console.log('err', message);
+        console.log('Upload failed: '.red + base);
+
+        if (message.details) {
+          console.log(JSON.stringify(message, null, 2).split('\n').map(function(line) {
+            return '\t' + line;
+          }).join('\n'));
+        } else {
+          console.log(message.message);
+        }
+      }
+
+      cb();
+    }
+  }
 }
