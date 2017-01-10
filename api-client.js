@@ -7,10 +7,12 @@ var apiUrl = function(path) {
   var urlObj = url.parse(config.api.baseUrl);
   urlObj.auth = config.api.admin.name + ':' + config.api.admin.password;
   urlObj.pathname = path;
+  console.log("URL: " + url.format(urlObj));
   return url.format(urlObj);
 };
 
 module.exports.createDataset = function(dataset, callback) {
+  console.log("Body: " + JSON.stringify(dataset));
   request(apiUrl('datasets'), {
     method: 'POST',
     headers: {

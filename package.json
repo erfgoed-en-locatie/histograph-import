@@ -24,7 +24,7 @@
     "aws-sdk": "^2.2.11",
     "chalk": "^1.1.1",
     "highland": "^2.5.1",
-    "histograph-config": "git+https://github.com/histograph/config#v0.5.1",
+    "histograph-config": "git+https://github.com/histograph/config#puppetdeploy",
     "minimist": "^1.2.0",
     "request": "^2.65.0"
   },
